@@ -1,0 +1,49 @@
+name: order-saga-platform
+
+# Host ports are deliberately non-default (5433, 27018, 4567, 3101-3105) so the stack
+# can run next to other projects on the same machine.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+
+  mongo:
+    # DocumentDB 5.0 implements the MongoDB 5.0 API; test against the same API level.
+    image: mongo:5.0
+    ports:
+      - "27018:27017"
+    healthcheck:
+      test: ["CMD", "mongo", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: sns,sqs
+      AWS_DEFAULT_REGION: us-east-1
+      # Queue URLs returned to clients use the host-mapped port.
+      LOCALSTACK_HOST: localhost.localstack.cloud:4567
+    ports:
+      - "4567:4566"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

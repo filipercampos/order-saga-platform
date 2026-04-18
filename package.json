@@ -14,9 +14,13 @@
     "typecheck": "tsc --noEmit",
     "test": "jest --selectProjects unit",
     "test:int": "jest --selectProjects integration --runInBand",
-    "test:all": "npm test && npm run test:int"
+    "test:all": "npm test && npm run test:int",
+    "provision:local": "tsx tools/provision.ts",
+    "dlq:redrive": "tsx tools/dlq-redrive.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-sns": "^3.1031.0",
+    "@aws-sdk/client-sqs": "^3.1031.0",
     "@nestjs/common": "^11.1.17",
     "@nestjs/core": "^11.1.17",
     "@nestjs/platform-express": "^11.1.17",
@@ -37,6 +41,7 @@
     "prettier": "^3.8.1",
     "ts-jest": "^29.4.9",
     "tsc-alias": "^1.8.16",
+    "tsx": "^4.21.0",
     "typescript": "5.7",
     "typescript-eslint": "^8.58.0"
   }
