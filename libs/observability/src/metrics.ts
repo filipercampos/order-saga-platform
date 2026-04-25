@@ -5,6 +5,8 @@
  */
 export const METRIC_NAMESPACE = 'OrderSaga';
 
+export const METRICS = Symbol('METRICS');
+
 export type Unit = 'Count' | 'Seconds' | 'Milliseconds';
 
 export type MetricWriter = (line: string) => void;

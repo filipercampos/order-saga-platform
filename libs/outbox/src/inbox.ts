@@ -1,4 +1,4 @@
-import { Kysely, Transaction, sql } from 'kysely';
+import { Kysely, QueryExecutorProvider, Transaction, sql } from 'kysely';
 
 export interface InboxKey {
   consumer: string;
@@ -36,7 +36,10 @@ export async function processOnce<DB, T>(
  * Inbox retention must exceed the longest possible redelivery horizon:
  * SQS retention (4 days) + DLQ retention (14 days) + time to redrive.
  */
-export async function purgeInbox<DB>(db: Kysely<DB>, olderThanDays: number): Promise<number> {
+export async function purgeInbox(
+  db: QueryExecutorProvider,
+  olderThanDays: number,
+): Promise<number> {
   const result = await sql`
     DELETE FROM inbox WHERE processed_at < now() - make_interval(days => ${olderThanDays})`.execute(
     db,

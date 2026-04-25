@@ -20,7 +20,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {
-      "@saga/*": ["libs/*/src"]
+      "@saga/contracts": ["libs/contracts/src"],
+      "@saga/messaging": ["libs/messaging/src"],
+      "@saga/observability": ["libs/observability/src"],
+      "@saga/outbox": ["libs/outbox/src"],
+      "@saga/platform": ["libs/platform/src"],
+      "@saga/resilience": ["libs/resilience/src"],
+      "@saga/tracing": ["libs/tracing/src"]
     }
   },
   "include": ["apps/**/*", "libs/**/*", "test/**/*", "tools/**/*"]

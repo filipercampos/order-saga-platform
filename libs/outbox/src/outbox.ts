@@ -1,6 +1,6 @@
 import { context, propagation } from '@opentelemetry/api';
 import type { Envelope } from '@saga/contracts';
-import { Kysely, sql } from 'kysely';
+import { Kysely, QueryExecutorProvider, sql } from 'kysely';
 
 export interface PendingMessage {
   /** Logical topic name (resolved to an ARN by the publisher). */
@@ -35,7 +35,10 @@ export interface MessagePublisher {
  * Writes messages to the outbox. Must be called with the transaction that performs the
  * business change, so either both commit or neither does.
  */
-export async function enqueue<DB>(trx: Kysely<DB>, messages: PendingMessage[]): Promise<void> {
+export async function enqueue(
+  trx: QueryExecutorProvider,
+  messages: PendingMessage[],
+): Promise<void> {
   if (messages.length === 0) return;
   // Capture the caller's trace context so the consumer span links back to this request.
   const trace: Record<string, string> = {};
@@ -142,7 +145,7 @@ export async function relayBatch<DB>(
 }
 
 /** Age of the oldest unpublished row in seconds (0 when the outbox is drained). */
-export async function oldestPendingAgeSeconds<DB>(db: Kysely<DB>): Promise<number> {
+export async function oldestPendingAgeSeconds(db: QueryExecutorProvider): Promise<number> {
   const { rows } = await sql<{ age: string | null }>`
     SELECT EXTRACT(EPOCH FROM now() - min(created_at))::text AS age
       FROM outbox WHERE published_at IS NULL`.execute(db);
@@ -150,7 +153,10 @@ export async function oldestPendingAgeSeconds<DB>(db: Kysely<DB>): Promise<numbe
 }
 
 /** Retention: published rows are kept for debugging/replay, then removed. */
-export async function purgePublished<DB>(db: Kysely<DB>, olderThanDays: number): Promise<number> {
+export async function purgePublished(
+  db: QueryExecutorProvider,
+  olderThanDays: number,
+): Promise<number> {
   const result = await sql`
     DELETE FROM outbox
      WHERE published_at < now() - make_interval(days => ${olderThanDays})`.execute(db);
