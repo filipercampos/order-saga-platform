@@ -1,4 +1,5 @@
 export * from './auth/auth.guard';
+export * from './auth/client-credentials';
 export * from './auth/token-verifiers';
 export * from './correlation';
 export * from './database';
