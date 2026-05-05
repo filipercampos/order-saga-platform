@@ -46,3 +46,14 @@ export async function purgeInbox(
   );
   return Number(result.numAffectedRows ?? 0);
 }
+
+/** Read-only inbox check, for handlers that must avoid repeating an external call. */
+export async function isProcessed(
+  db: QueryExecutorProvider,
+  consumer: string,
+  eventId: string,
+): Promise<boolean> {
+  const { rows } = await sql`
+    SELECT 1 FROM inbox WHERE consumer = ${consumer} AND event_id = ${eventId}::uuid`.execute(db);
+  return rows.length > 0;
+}
