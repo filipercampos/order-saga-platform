@@ -16,7 +16,8 @@
     "test:int": "jest --selectProjects integration --runInBand",
     "test:all": "npm test && npm run test:int",
     "provision:local": "tsx tools/provision.ts",
-    "dlq:redrive": "tsx tools/dlq-redrive.ts"
+    "dlq:redrive": "tsx tools/dlq-redrive.ts",
+    "projection:replay": "tsx apps/order/src/history/replay-cli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sns": "^3.1031.0",
@@ -30,6 +31,7 @@
     "@opentelemetry/sdk-node": "^0.215.0",
     "aws-jwt-verify": "^5.1.1",
     "kysely": "^0.28.16",
+    "mongodb": "^6.21.0",
     "nestjs-pino": "^4.6.1",
     "pg": "^8.20.0",
     "pino": "^10.3.1",
