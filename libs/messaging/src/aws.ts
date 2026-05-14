@@ -18,7 +18,20 @@ export interface AwsClients {
 export function createAwsClients(
   config: Pick<AwsMessagingConfig, 'region' | 'endpoint'>,
 ): AwsClients {
-  const common = { region: config.region, endpoint: config.endpoint };
+  const common = {
+    region: config.region,
+    endpoint: config.endpoint,
+    // LocalStack (endpoint set) accepts any static key; in AWS the default provider chain
+    // resolves IRSA web-identity credentials for the pod's service account.
+    ...(config.endpoint
+      ? {
+          credentials: {
+            accessKeyId: process.env.AWS_ACCESS_KEY_ID ?? 'test',
+            secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? 'test',
+          },
+        }
+      : {}),
+  };
   return { sns: new SNSClient(common), sqs: new SQSClient(common) };
 }
 
