@@ -1,5 +1,6 @@
 import {
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   ReceiveMessageCommand,
   SQSClient,
   SendMessageCommand,
@@ -22,12 +23,24 @@ export interface RedriveOptions {
  * Consumers are idempotent (inbox), so redriving an already-processed message is safe.
  */
 export async function redriveDlq(sqs: SQSClient, options: RedriveOptions): Promise<number> {
+  // Bound the run by the depth at start: a message that fails again and is dead-lettered
+  // during the redrive must not be picked up a second time (that would loop forever).
+  const attributes = await sqs.send(
+    new GetQueueAttributesCommand({
+      QueueUrl: options.dlqUrl,
+      AttributeNames: ['ApproximateNumberOfMessages'],
+    }),
+  );
+  const limit = Math.min(
+    options.limit,
+    Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0),
+  );
   let moved = 0;
-  while (moved < options.limit) {
+  while (moved < limit) {
     const out = await sqs.send(
       new ReceiveMessageCommand({
         QueueUrl: options.dlqUrl,
-        MaxNumberOfMessages: Math.min(10, options.limit - moved),
+        MaxNumberOfMessages: Math.min(10, limit - moved),
         WaitTimeSeconds: 1,
         VisibilityTimeout: 60,
         MessageAttributeNames: ['All'],
