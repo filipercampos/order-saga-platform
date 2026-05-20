@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Order saga platform - Cognito user pool for customers (authorization code + PKCE in the
+  web app) and resource servers/app clients for machine-to-machine access.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  DomainPrefix:
+    Type: String
+    Description: Cognito hosted UI domain prefix (globally unique)
+  CallbackUrls:
+    Type: CommaDelimitedList
+    Default: http://localhost:5173/callback
+  LogoutUrls:
+    Type: CommaDelimitedList
+    Default: http://localhost:5173/
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub saga-${Environment}-customers
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      DeletionProtection: !If [IsProd, ACTIVE, INACTIVE]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolAddOns:
+        AdvancedSecurityMode: !If [IsProd, ENFORCED, AUDIT]
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref DomainPrefix
+      UserPoolId: !Ref UserPool
+
+  OrdersResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: orders
+      Name: Order API
+      Scopes:
+        - ScopeName: read
+          ScopeDescription: Read own orders
+        - ScopeName: write
+          ScopeDescription: Place orders
+        - ScopeName: admin
+          ScopeDescription: Saga operations (M2M only)
+
+  InventoryResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: inventory
+      Name: Inventory internal API
+      Scopes:
+        - ScopeName: admin
+          ScopeDescription: Catalogue and stock sync
+
+  PaymentResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: payment
+      Name: Payment internal API
+      Scopes:
+        - ScopeName: admin
+          ScopeDescription: Wallet linking and payment inspection
+
+  # Public client (SPA / mobile): authorization code + PKCE, no secret, short-lived tokens.
+  WebClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: OrdersResourceServer
+    Properties:
+      ClientName: !Sub saga-${Environment}-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, orders/read, orders/write]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: !Ref CallbackUrls
+      LogoutURLs: !Ref LogoutUrls
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 7
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+  # Confidential client for operators/back-office automation (client credentials).
+  OperationsClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: [OrdersResourceServer, InventoryResourceServer, PaymentResourceServer]
+    Properties:
+      ClientName: !Sub saga-${Environment}-operations
+      UserPoolId: !Ref UserPool
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthScopes: [orders/admin, inventory/admin, payment/admin]
+      AccessTokenValidity: 60
+      TokenValidityUnits:
+        AccessToken: minutes
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+    Description: COGNITO_USER_POOL_ID for every service
+  WebClientId:
+    Value: !Ref WebClient
+  OperationsClientId:
+    Value: !Ref OperationsClient
+  TokenEndpoint:
+    Value: !Sub https://${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/token

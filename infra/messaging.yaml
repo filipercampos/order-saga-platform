@@ -1,0 +1,390 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Order saga platform - SNS topics, per-consumer SQS queues with DLQs and redrive,
+  subscriptions with filter policies, and backlog/DLQ alarms. Mirrors
+  libs/messaging/src/topology.ts (see ADR 0003).
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  AlarmTopicArn:
+    Type: String
+    Default: ''
+    Description: SNS topic for operational alarms (optional)
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
+
+Resources:
+  # ---------------- Topics ----------------
+  SagaCommandsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub saga-${Environment}-saga-commands.fifo
+      FifoTopic: true
+      # Deduplication ids are the outbox event ids, not content hashes.
+      ContentBasedDeduplication: false
+      KmsMasterKeyId: alias/aws/sns
+
+  OrderEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub saga-${Environment}-order-events
+      KmsMasterKeyId: alias/aws/sns
+
+  InventoryEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub saga-${Environment}-inventory-events
+      KmsMasterKeyId: alias/aws/sns
+
+  PaymentEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub saga-${Environment}-payment-events
+      KmsMasterKeyId: alias/aws/sns
+
+  # ---------------- inventory-commands.fifo ----------------
+  InventoryCommandsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-inventory-commands-dlq.fifo
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # Only the matching source queue may use this DLQ (ARN built by name to avoid a cycle).
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-inventory-commands.fifo
+
+  InventoryCommandsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-inventory-commands.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      # High-throughput FIFO: ordering and dedup are per order (message group).
+      DeduplicationScope: messageGroup
+      FifoThroughputLimit: perMessageGroupId
+      VisibilityTimeout: 30
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt InventoryCommandsDlq.Arn
+        maxReceiveCount: 5
+
+  # ---------------- payment-commands.fifo ----------------
+  PaymentCommandsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-payment-commands-dlq.fifo
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # Only the matching source queue may use this DLQ (ARN built by name to avoid a cycle).
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-payment-commands.fifo
+
+  PaymentCommandsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-payment-commands.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      DeduplicationScope: messageGroup
+      FifoThroughputLimit: perMessageGroupId
+      # Ledger client worst case ~8 s (3 x 2 s + backoff); 60 s keeps a single owner.
+      VisibilityTimeout: 60
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PaymentCommandsDlq.Arn
+        maxReceiveCount: 5
+
+  # ---------------- order-saga-replies ----------------
+  OrderSagaRepliesDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-order-saga-replies-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # Only the matching source queue may use this DLQ (ARN built by name to avoid a cycle).
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-order-saga-replies
+
+  OrderSagaRepliesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-order-saga-replies
+      VisibilityTimeout: 30
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderSagaRepliesDlq.Arn
+        maxReceiveCount: 10
+
+  # ---------------- order-history ----------------
+  OrderHistoryDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-order-history-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # Only the matching source queue may use this DLQ (ARN built by name to avoid a cycle).
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-order-history
+
+  OrderHistoryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-order-history
+      VisibilityTimeout: 30
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderHistoryDlq.Arn
+        maxReceiveCount: 10
+
+  # ---------------- notification-order-events ----------------
+  NotificationDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-notification-order-events-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # Only the matching source queue may use this DLQ (ARN built by name to avoid a cycle).
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-notification-order-events
+
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub saga-${Environment}-notification-order-events
+      VisibilityTimeout: 60
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationDlq.Arn
+        maxReceiveCount: 5
+
+  # ---------------- SNS -> SQS delivery ----------------
+  SnsToSqsPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref InventoryCommandsQueue
+        - !Ref PaymentCommandsQueue
+        - !Ref OrderSagaRepliesQueue
+        - !Ref OrderHistoryQueue
+        - !Ref NotificationQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowOwnTopics
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              - !GetAtt InventoryCommandsQueue.Arn
+              - !GetAtt PaymentCommandsQueue.Arn
+              - !GetAtt OrderSagaRepliesQueue.Arn
+              - !GetAtt OrderHistoryQueue.Arn
+              - !GetAtt NotificationQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !Ref SagaCommandsTopic
+                  - !Ref OrderEventsTopic
+                  - !Ref InventoryEventsTopic
+                  - !Ref PaymentEventsTopic
+
+  InventoryCommandsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SagaCommandsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt InventoryCommandsQueue.Arn
+      RawMessageDelivery: true
+      FilterPolicy:
+        target: [inventory]
+
+  PaymentCommandsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SagaCommandsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt PaymentCommandsQueue.Arn
+      RawMessageDelivery: true
+      FilterPolicy:
+        target: [payment]
+
+  RepliesFromInventory:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref InventoryEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrderSagaRepliesQueue.Arn
+      RawMessageDelivery: true
+
+  RepliesFromPayment:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PaymentEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrderSagaRepliesQueue.Arn
+      RawMessageDelivery: true
+
+  HistoryFromOrders:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OrderEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrderHistoryQueue.Arn
+      RawMessageDelivery: true
+
+  HistoryFromInventory:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref InventoryEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrderHistoryQueue.Arn
+      RawMessageDelivery: true
+
+  HistoryFromPayment:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PaymentEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrderHistoryQueue.Arn
+      RawMessageDelivery: true
+
+  NotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OrderEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt NotificationQueue.Arn
+      RawMessageDelivery: true
+      FilterPolicy:
+        type: [order.OrderConfirmed, order.OrderCancelled]
+
+  # ---------------- Alarms ----------------
+  # Any message in a DLQ needs a human (runbook: dlq-not-empty).
+  InventoryCommandsDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub saga-${Environment}-inventory-commands-dlq-not-empty
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt InventoryCommandsDlq.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  PaymentCommandsDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub saga-${Environment}-payment-commands-dlq-not-empty
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PaymentCommandsDlq.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  OrderSagaRepliesDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub saga-${Environment}-order-saga-replies-dlq-not-empty
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OrderSagaRepliesDlq.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  # Saga commands waiting too long means the saga deadlines will start firing.
+  PaymentCommandsAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub saga-${Environment}-payment-commands-backlog-age
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PaymentCommandsQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 60
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+  OrderHistoryAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub saga-${Environment}-order-history-lag
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt OrderHistoryQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 120
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+
+Outputs:
+  MessagingNamespace:
+    Value: !Sub saga-${Environment}
+    Description: Value for MESSAGING_NAMESPACE
+  SagaCommandsTopicArn:
+    Value: !Ref SagaCommandsTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-SagaCommandsTopicArn
+  OrderEventsTopicArn:
+    Value: !Ref OrderEventsTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-OrderEventsTopicArn
+  InventoryEventsTopicArn:
+    Value: !Ref InventoryEventsTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-InventoryEventsTopicArn
+  PaymentEventsTopicArn:
+    Value: !Ref PaymentEventsTopic
+    Export:
+      Name: !Sub ${AWS::StackName}-PaymentEventsTopicArn

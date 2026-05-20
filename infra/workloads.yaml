@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Order saga platform - EKS workload identity. Fargate profile for the services that
+  run on Fargate (payment, notification) and one IRSA role per service with
+  least-privilege access to its own topics and queues. The cluster itself and the EC2
+  managed node group come from the platform stack.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  ClusterName:
+    Type: String
+  OidcProviderArn:
+    Type: String
+    Description: IAM OIDC provider ARN of the cluster
+  OidcProviderHost:
+    Type: String
+    Description: OIDC issuer host and path without https:// (oidc.eks.<region>.amazonaws.com/id/XXXX)
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  Namespace:
+    Type: String
+    Default: order-saga
+  LedgerClientSecretArn:
+    Type: String
+    Description: Secret holding the payment service's ledger M2M client id/secret
+
+Resources:
+  FargatePodExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks-fargate-pods.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:fargateprofile/${ClusterName}/*
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy
+
+  # Pods labelled compute=fargate in the namespace land on Fargate; everything else is
+  # scheduled on the EC2 node group (see ADR 0007).
+  FargateProfile:
+    Type: AWS::EKS::FargateProfile
+    Properties:
+      ClusterName: !Ref ClusterName
+      FargateProfileName: !Sub saga-${Environment}
+      PodExecutionRoleArn: !GetAtt FargatePodExecutionRole.Arn
+      Subnets: !Ref PrivateSubnetIds
+      Selectors:
+        - Namespace: !Ref Namespace
+          Labels:
+            - Key: compute
+              Value: fargate
+
+  OrderServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub saga-${Environment}-order-service
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Federated": "${OidcProviderArn}" },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": { "StringEquals": {
+              "${OidcProviderHost}:sub": "system:serviceaccount:${Namespace}:order-service",
+              "${OidcProviderHost}:aud": "sts.amazonaws.com"
+            } }
+          }]
+        }
+      Policies:
+        - PolicyName: messaging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-saga-commands.fifo
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-order-events
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-order-saga-replies
+                  - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-order-history
+
+  InventoryServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub saga-${Environment}-inventory-service
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Federated": "${OidcProviderArn}" },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": { "StringEquals": {
+              "${OidcProviderHost}:sub": "system:serviceaccount:${Namespace}:inventory-service",
+              "${OidcProviderHost}:aud": "sts.amazonaws.com"
+            } }
+          }]
+        }
+      Policies:
+        - PolicyName: messaging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-inventory-events
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-inventory-commands.fifo
+
+  PaymentServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub saga-${Environment}-payment-service
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Federated": "${OidcProviderArn}" },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": { "StringEquals": {
+              "${OidcProviderHost}:sub": "system:serviceaccount:${Namespace}:payment-service",
+              "${OidcProviderHost}:aud": "sts.amazonaws.com"
+            } }
+          }]
+        }
+      Policies:
+        - PolicyName: messaging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-payment-events
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-payment-commands.fifo
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref LedgerClientSecretArn
+
+  NotificationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub saga-${Environment}-notification-service
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Federated": "${OidcProviderArn}" },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": { "StringEquals": {
+              "${OidcProviderHost}:sub": "system:serviceaccount:${Namespace}:notification-service",
+              "${OidcProviderHost}:aud": "sts.amazonaws.com"
+            } }
+          }]
+        }
+      Policies:
+        - PolicyName: messaging-and-email
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource: !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:saga-${Environment}-notification-order-events
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    ses:FromAddress: !Sub orders-${Environment}@example.com
+
+Outputs:
+  OrderServiceRoleArn:
+    Value: !GetAtt OrderServiceRole.Arn
+  InventoryServiceRoleArn:
+    Value: !GetAtt InventoryServiceRole.Arn
+  PaymentServiceRoleArn:
+    Value: !GetAtt PaymentServiceRole.Arn
+  NotificationServiceRoleArn:
+    Value: !GetAtt NotificationServiceRole.Arn

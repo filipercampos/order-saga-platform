@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Order saga platform - data stores. One RDS PostgreSQL instance hosting one database
+  and one login role per service (no shared tables, no cross-database grants), and an
+  Amazon DocumentDB 5.0 cluster for the order-history read model.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Database subnets in at least two AZs
+  WorkloadSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group of the EKS pods / nodes allowed to reach the databases
+  PostgresInstanceClass:
+    Type: String
+    Default: db.t4g.medium
+  DocDbInstanceClass:
+    Type: String
+    Default: db.t4g.medium
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+  # ---------------- PostgreSQL (RDS) ----------------
+  PostgresSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: order saga PostgreSQL
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref WorkloadSecurityGroupId
+
+  PostgresSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: order saga PostgreSQL
+      SubnetIds: !Ref PrivateSubnetIds
+
+  PostgresParameters:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: postgres16
+      Description: order saga PostgreSQL parameters
+      Parameters:
+        rds.force_ssl: '1'
+        # Surface slow saga/outbox queries and lock waits.
+        log_min_duration_statement: '500'
+        log_lock_waits: '1'
+        idle_in_transaction_session_timeout: '60000'
+
+  Postgres:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub saga-${Environment}-postgres
+      Engine: postgres
+      EngineVersion: '16.4'
+      DBInstanceClass: !Ref PostgresInstanceClass
+      AllocatedStorage: '50'
+      MaxAllocatedStorage: 500
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !If [IsProd, true, false]
+      MasterUsername: saga_admin
+      # Master password generated and rotated by RDS in Secrets Manager.
+      ManageMasterUserPassword: true
+      DBSubnetGroupName: !Ref PostgresSubnetGroup
+      DBParameterGroupName: !Ref PostgresParameters
+      VPCSecurityGroups: [!Ref PostgresSecurityGroup]
+      PubliclyAccessible: false
+      BackupRetentionPeriod: !If [IsProd, 14, 3]
+      DeletionProtection: !If [IsProd, true, false]
+      EnablePerformanceInsights: true
+      EnableIAMDatabaseAuthentication: true
+      CopyTagsToSnapshot: true
+      AutoMinorVersionUpgrade: true
+
+  # One credential per service. The bootstrap job (deploy/helm, pre-install hook) creates
+  # the matching role and database (see docker/postgres/init.sql for the exact grants).
+  OrderDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub saga/${Environment}/db/order
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"order_svc","dbname":"orders"}'
+        GenerateStringKey: password
+        ExcludePunctuation: true
+        PasswordLength: 32
+
+  InventoryDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub saga/${Environment}/db/inventory
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"inventory_svc","dbname":"inventory"}'
+        GenerateStringKey: password
+        ExcludePunctuation: true
+        PasswordLength: 32
+
+  PaymentDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub saga/${Environment}/db/payment
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"payment_svc","dbname":"payments"}'
+        GenerateStringKey: password
+        ExcludePunctuation: true
+        PasswordLength: 32
+
+  NotificationDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub saga/${Environment}/db/notification
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"notification_svc","dbname":"notifications"}'
+        GenerateStringKey: password
+        ExcludePunctuation: true
+        PasswordLength: 32
+
+  # ---------------- DocumentDB (read model) ----------------
+  DocDbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: order history DocumentDB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          SourceSecurityGroupId: !Ref WorkloadSecurityGroupId
+
+  DocDbSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: order history DocumentDB
+      SubnetIds: !Ref PrivateSubnetIds
+
+  DocDbParameters:
+    Type: AWS::DocDB::DBClusterParameterGroup
+    Properties:
+      Family: docdb5.0
+      Description: order history DocumentDB parameters
+      Parameters:
+        tls: enabled
+        audit_logs: enabled
+        profiler: enabled
+        profiler_threshold_ms: '200'
+
+  DocDbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub saga/${Environment}/docdb/master
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"history_admin"}'
+        GenerateStringKey: password
+        ExcludeCharacters: '"@/\:'
+        PasswordLength: 32
+
+  DocDbCluster:
+    Type: AWS::DocDB::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !Sub saga-${Environment}-history
+      EngineVersion: 5.0.0
+      MasterUsername: history_admin
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DocDbSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DocDbSubnetGroup
+      DBClusterParameterGroupName: !Ref DocDbParameters
+      VpcSecurityGroupIds: [!Ref DocDbSecurityGroup]
+      StorageEncrypted: true
+      BackupRetentionPeriod: !If [IsProd, 14, 1]
+      DeletionProtection: !If [IsProd, true, false]
+      EnableCloudwatchLogsExports: [audit, profiler]
+
+  DocDbPrimary:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DocDbCluster
+      DBInstanceClass: !Ref DocDbInstanceClass
+
+  # Reads use readPreference=secondaryPreferred; prod gets a replica in another AZ.
+  DocDbReplica:
+    Type: AWS::DocDB::DBInstance
+    Condition: IsProd
+    Properties:
+      DBClusterIdentifier: !Ref DocDbCluster
+      DBInstanceClass: !Ref DocDbInstanceClass
+
+Outputs:
+  PostgresEndpoint:
+    Value: !GetAtt Postgres.Endpoint.Address
+  PostgresMasterSecretArn:
+    Value: !GetAtt Postgres.MasterUserSecret.SecretArn
+  DocDbEndpoint:
+    Value: !GetAtt DocDbCluster.Endpoint
+  DocDbReaderEndpoint:
+    Value: !GetAtt DocDbCluster.ReadEndpoint
+  DbSecretArns:
+    Value: !Join
+      - ','
+      - [!Ref OrderDbSecret, !Ref InventoryDbSecret, !Ref PaymentDbSecret, !Ref NotificationDbSecret]
