@@ -5,6 +5,7 @@ import {
   Inject,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { Public } from '@saga/platform';
 
 export const HEALTH_CHECKS = Symbol('HEALTH_CHECKS');
 
@@ -21,6 +22,7 @@ const CHECK_TIMEOUT_MS = 2_000;
  * so the endpoint is removed from the Service before the pod stops accepting work.
  */
 @Controller('health')
+@Public()
 export class HealthController implements BeforeApplicationShutdown {
   private shuttingDown = false;
 

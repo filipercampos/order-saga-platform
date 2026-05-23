@@ -25,6 +25,11 @@ export default tseslint.config(
     },
   },
   {
+    // Composition roots may wire services together.
+    files: ['tools/**/*.ts'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  {
     files: ['test/**/*.ts', '**/*.spec.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',

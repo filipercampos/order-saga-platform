@@ -1,0 +1,28 @@
+# Same image as order-service, only the read-model projector enabled, so a slow or
+# rebuilding projection never competes with the saga for CPU or DB connections.
+service: order
+nameOverride: order-history-projector
+compute: ec2
+http:
+  enabled: false
+migrations:
+  enabled: false
+serviceAccount:
+  # Reuses order-service's ServiceAccount (and IAM role) created by that release.
+  create: false
+  name: order-service
+existingSecret: saga-order-service
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "000000000000"
+  MESSAGING_NAMESPACE: saga-prod
+  AUTH_MODE: cognito
+  COGNITO_USER_POOL_ID: us-east-1_EXAMPLE
+  SAGA_WORKERS_ENABLED: "false"
+  PROJECTOR_ENABLED: "true"
+  DATABASE_POOL_MAX: "3"
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 4
+podDisruptionBudget:
+  minAvailable: 0

@@ -59,7 +59,7 @@ export class OrderModule {
         loggerModule({
           serviceName: ServiceName.order,
           level: env.LOG_LEVEL,
-          pretty: env.NODE_ENV === 'development',
+          pretty: env.LOG_PRETTY,
         }),
       ],
       controllers: [

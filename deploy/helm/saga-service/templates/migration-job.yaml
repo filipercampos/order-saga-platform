@@ -1,0 +1,44 @@
+{{- if .Values.migrations.enabled }}
+# Runs before new pods are rolled out. Migrations are additive (expand/contract), so the
+# previous version keeps working against the migrated schema during the rollout.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "saga.name" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "saga.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "saga.selectorLabels" . | nindent 8 }}
+        {{- if eq .Values.compute "fargate" }}
+        compute: fargate
+        {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "saga.serviceAccount" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: migrate
+          image: {{ include "saga.image" . }}
+          command: ["node", "dist/tools/migrate.js", {{ .Values.service | quote }}]
+          {{- if .Values.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+{{- end }}

@@ -1,0 +1,27 @@
+# notification-service: Fargate. Spiky, low baseline, no latency SLO, no DaemonSet needs;
+# paying per pod beats keeping node capacity warm for it.
+service: notification
+compute: fargate
+serviceAccount:
+  roleArn: arn:aws:iam::000000000000:role/saga-prod-notification-service
+existingSecret: saga-notification-service
+observability:
+  collectorSidecar:
+    enabled: true
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "000000000000"
+  MESSAGING_NAMESPACE: saga-prod
+  AUTH_MODE: cognito
+  COGNITO_USER_POOL_ID: us-east-1_EXAMPLE
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 512Mi
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 4
+podDisruptionBudget:
+  minAvailable: 0

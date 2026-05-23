@@ -44,6 +44,19 @@ describe('order saga end to end (Postgres + MongoDB + LocalStack SNS/SQS)', () =
     }
   }
 
+  it('exposes health probes without a token and protects everything else', async () => {
+    for (const app of [
+      platform.order,
+      platform.inventory,
+      platform.payment,
+      platform.notification,
+    ]) {
+      await request(app.getHttpServer()).get('/health/live').expect(200);
+      await request(app.getHttpServer()).get('/health/ready').expect(200);
+    }
+    await request(platform.order.getHttpServer()).get('/orders').expect(401);
+  });
+
   it('happy path: reserves stock, charges the ledger once, confirms, notifies and projects', async () => {
     await seedProduct(platform, 'SKU-HAPPY', 10, '1500');
     const customer = await seedCustomer(platform, 100_000n);

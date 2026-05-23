@@ -21,6 +21,8 @@ export const baseEnvShape = {
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(0).default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  /** Human-readable logs for local runs (needs the pino-pretty dev dependency). */
+  LOG_PRETTY: bool(false),
   DATABASE_URL: z.string().url(),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
   MIGRATE_ON_START: bool(false),

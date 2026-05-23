@@ -1,0 +1,36 @@
+# payment-service: Fargate. Each pod gets its own micro-VM (no kernel shared with other
+# workloads), which narrows the blast radius of the only service holding ledger
+# credentials. Throughput is bounded by the ledger, not by pod start-up time.
+service: payment
+compute: fargate
+serviceAccount:
+  roleArn: arn:aws:iam::000000000000:role/saga-prod-payment-service
+existingSecret: saga-payment-service  # DB_*, LEDGER_CLIENT_ID, LEDGER_CLIENT_SECRET
+observability:
+  collectorSidecar:
+    enabled: true
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "000000000000"
+  MESSAGING_NAMESPACE: saga-prod
+  AUTH_MODE: cognito
+  COGNITO_USER_POOL_ID: us-east-1_EXAMPLE
+  COGNITO_CLIENT_IDS: operations-client-id
+  LEDGER_BASE_URL: https://ledger.internal.example.com
+  LEDGER_MERCHANT_ACCOUNT_ID: 00000000-0000-0000-0000-000000000000
+  LEDGER_AUTH_MODE: client_credentials
+  LEDGER_TOKEN_URL: https://ledger-auth.auth.us-east-1.amazoncognito.com/oauth2/token
+  LEDGER_TIMEOUT_MS: "2000"
+  LEDGER_MAX_ATTEMPTS: "3"
+  LEDGER_BREAKER_THRESHOLD: "5"
+  LEDGER_BREAKER_RESET_MS: "30000"
+# Fargate bills the pod's requests: size them to what is used.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 512Mi
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 6

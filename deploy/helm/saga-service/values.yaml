@@ -1,0 +1,66 @@
+# Defaults shared by every service. Per-service overrides live in deploy/helm/values/.
+
+# Entrypoint inside the monorepo image (dist/apps/<service>/src/main.js).
+service: order
+# Logical name used for the ServiceAccount (IRSA trust policy matches it) and labels.
+nameOverride: ""
+
+image:
+  repository: 000000000000.dkr.ecr.us-east-1.amazonaws.com/order-saga-platform
+  tag: ""  # set by CI to the git sha; never "latest"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# EC2 node group by default. "fargate" adds the label the Fargate profile selects on
+# (see infra/workloads.yaml and ADR 0007).
+compute: ec2
+
+serviceAccount:
+  create: true
+  # Defaults to the release's service name; the IRSA trust policy matches it.
+  name: ""
+  # IRSA: IAM role from infra/workloads.yaml.
+  roleArn: ""
+
+containerPort: 3000
+
+http:
+  enabled: true
+
+env: {}
+# Kubernetes Secret (synced from Secrets Manager by External Secrets Operator) with
+# DB_HOST, DB_USERNAME, DB_PASSWORD, DB_NAME and any service secrets.
+existingSecret: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 65
+
+podDisruptionBudget:
+  minAvailable: 1
+
+# Migrations run once per release, before new pods start.
+migrations:
+  enabled: true
+
+observability:
+  # On EC2 nodes the ADOT collector runs as a DaemonSet reachable on the host IP.
+  # Fargate has no DaemonSets, so those pods get a collector sidecar instead.
+  collectorSidecar:
+    enabled: false
+    image: public.ecr.aws/aws-observability/aws-otel-collector:v0.40.0
+
+terminationGracePeriodSeconds: 45
+
+networkPolicy:
+  enabled: true

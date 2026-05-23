@@ -2,6 +2,21 @@ name: order-saga-platform
 
 # Host ports are deliberately non-default (5433, 27018, 4567, 3101-3105) so the stack
 # can run next to other projects on the same machine.
+x-aws: &aws
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://localstack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  MESSAGING_NAMESPACE: saga-local
+
+x-app: &app
+  # Local only: any bearer token is accepted (see README). Rejected when NODE_ENV=production.
+  NODE_ENV: test
+  AUTH_MODE: disabled
+  MIGRATE_ON_START: "true"
+  METRICS_ENABLED: "false"
+  LOG_LEVEL: info
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -44,6 +59,83 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+
+  # ---------------- application (one image, five entrypoints) ----------------
+  provision:
+    build: .
+    image: order-saga-platform:local
+    command: ["node", "dist/tools/provision.js"]
+    environment:
+      <<: *aws
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  ledger-stub:
+    image: order-saga-platform:local
+    environment:
+      SERVICE: ledger-stub
+      PORT: "3105"
+      LEDGER_STUB_DEFAULT_BALANCE: "1000000"
+    ports:
+      - "3105:3105"
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  order:
+    image: order-saga-platform:local
+    environment:
+      <<: [*aws, *app]
+      SERVICE: order
+      PORT: "3101"
+      DATABASE_URL: postgres://order_svc:order_svc@postgres:5432/orders
+      MONGO_URL: mongodb://mongo:27017/?directConnection=true
+    ports:
+      - "3101:3101"
+    depends_on: &deps
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      provision:
+        condition: service_completed_successfully
+
+  inventory:
+    image: order-saga-platform:local
+    environment:
+      <<: [*aws, *app]
+      SERVICE: inventory
+      PORT: "3102"
+      DATABASE_URL: postgres://inventory_svc:inventory_svc@postgres:5432/inventory
+    ports:
+      - "3102:3102"
+    depends_on: *deps
+
+  payment:
+    image: order-saga-platform:local
+    environment:
+      <<: [*aws, *app]
+      SERVICE: payment
+      PORT: "3103"
+      DATABASE_URL: postgres://payment_svc:payment_svc@postgres:5432/payments
+      LEDGER_BASE_URL: http://ledger-stub:3105
+      LEDGER_MERCHANT_ACCOUNT_ID: merchant-revenue
+      LEDGER_AUTH_MODE: static
+    ports:
+      - "3103:3103"
+    depends_on: *deps
+
+  notification:
+    image: order-saga-platform:local
+    environment:
+      <<: [*aws, *app]
+      SERVICE: notification
+      PORT: "3104"
+      DATABASE_URL: postgres://notification_svc:notification_svc@postgres:5432/notifications
+    ports:
+      - "3104:3104"
+    depends_on: *deps
 
 volumes:
   pgdata:

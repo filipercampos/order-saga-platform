@@ -45,7 +45,7 @@ export class InventoryModule {
         loggerModule({
           serviceName: ServiceName.inventory,
           level: env.LOG_LEVEL,
-          pretty: env.NODE_ENV === 'development',
+          pretty: env.LOG_PRETTY,
         }),
       ],
       controllers: [ProductsController, HealthController],

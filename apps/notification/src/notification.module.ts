@@ -52,7 +52,7 @@ export class NotificationModule {
         loggerModule({
           serviceName: ServiceName.notification,
           level: env.LOG_LEVEL,
-          pretty: env.NODE_ENV === 'development',
+          pretty: env.LOG_PRETTY,
         }),
       ],
       controllers: [HealthController],

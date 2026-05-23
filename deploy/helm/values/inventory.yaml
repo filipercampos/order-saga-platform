@@ -1,0 +1,17 @@
+# inventory-service: hot path of every order (row locks on products). EC2 node group:
+# predictable latency, fast HPA scale-out onto warm nodes, Graviton pricing.
+service: inventory
+compute: ec2
+serviceAccount:
+  roleArn: arn:aws:iam::000000000000:role/saga-prod-inventory-service
+existingSecret: saga-inventory-service
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "000000000000"
+  MESSAGING_NAMESPACE: saga-prod
+  AUTH_MODE: cognito
+  COGNITO_USER_POOL_ID: us-east-1_EXAMPLE
+  COGNITO_CLIENT_IDS: operations-client-id
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 10

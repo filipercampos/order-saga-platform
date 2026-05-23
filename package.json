@@ -17,7 +17,9 @@
     "test:all": "npm test && npm run test:int",
     "provision:local": "tsx tools/provision.ts",
     "dlq:redrive": "tsx tools/dlq-redrive.ts",
-    "projection:replay": "tsx apps/order/src/history/replay-cli.ts"
+    "projection:replay": "tsx apps/order/src/history/replay-cli.ts",
+    "e2e:latency": "tsx tools/e2e-latency.ts",
+    "migrate": "tsx tools/migrate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sns": "^3.1031.0",

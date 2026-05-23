@@ -78,7 +78,7 @@ export class PaymentModule {
         loggerModule({
           serviceName: ServiceName.payment,
           level: env.LOG_LEVEL,
-          pretty: env.NODE_ENV === 'development',
+          pretty: env.LOG_PRETTY,
         }),
       ],
       controllers: [WalletsController, HealthController],
