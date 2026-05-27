@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test -- --coverage
+      - run: npm run build
+
+  integration:
+    runs-on: ubuntu-24.04
+    needs: verify
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Testcontainers: Postgres 16, MongoDB 5.0, LocalStack 3.8 (SNS + SQS).
+      - run: npm run test:int
+
+  infra:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install "cfn-lint<1.30"
+      - run: cfn-lint infra/*.yaml
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: helm lint and template every service
+        run: |
+          helm lint deploy/helm/saga-service -f deploy/helm/values/order.yaml --set image.tag=ci
+          for values in deploy/helm/values/*.yaml; do
+            helm template "$(basename "$values" .yaml)" deploy/helm/saga-service \
+              -f "$values" --set image.tag=ci > /dev/null
+          done
+
+  image:
+    runs-on: ubuntu-24.04
+    needs: [verify, integration]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Graviton node group and Fargate ARM64.
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: order-saga-platform:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
