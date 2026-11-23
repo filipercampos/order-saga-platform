@@ -38,8 +38,16 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # Pull outside Jest so registry/network problems fail their own step instead of
+      # eating the beforeAll budget. Tags must match test/support/platform.ts.
+      - name: Pre-pull Testcontainers images
+        run: |
+          for image in postgres:16-alpine mongo:5.0 localstack/localstack:3.8 testcontainers/ryuk:0.14.0; do
+            docker pull --quiet "$image"
+          done
       # Testcontainers: Postgres 16, MongoDB 5.0, LocalStack 3.8 (SNS + SQS).
-      - run: npm run test:int
+      # The github-actions reporter turns failing tests into annotations on the run.
+      - run: npm run test:int -- --reporters=default --reporters=github-actions
 
   infra:
     runs-on: ubuntu-24.04

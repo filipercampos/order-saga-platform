@@ -30,12 +30,20 @@ describe('order saga end to end (Postgres + MongoDB + LocalStack SNS/SQS)', () =
     platform.ledger.mode = { kind: 'ok' };
   });
 
+  /**
+   * State path of a saga. Compensation retries are audited as self-transitions
+   * (e.g. REFUNDING_PAYMENT -> REFUNDING_PAYMENT on timeout); how many happen depends on
+   * runner speed, so they are excluded here. Retry safety is asserted through the ledger
+   * (exactly one reversal), not through the audit trail.
+   */
   async function transitions(orderId: string) {
     const client = new Client({ connectionString: platform.pgUrl('orders') });
     await client.connect();
     try {
       const { rows } = await client.query<{ to_state: string }>(
-        'SELECT to_state FROM saga_transitions WHERE order_id = $1 ORDER BY id',
+        `SELECT to_state FROM saga_transitions
+          WHERE order_id = $1 AND from_state IS DISTINCT FROM to_state
+          ORDER BY id`,
         [orderId],
       );
       return rows.map((row) => row.to_state);
